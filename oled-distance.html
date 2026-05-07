@@ -79,12 +79,12 @@
 <h1>PWM Measurement vs Distance</h1>
 
 <div class="main">
-  <canvas id="sideCanvas" style="width:340px;height:270px;"></canvas>
+  <canvas id="sideCanvas" style="width:460px;height:270px;"></canvas>
 
   <div class="side-panels">
     <div class="panel">
       <div class="panel-header">Sensor Waveform</div>
-      <canvas id="waveCanvas" style="width:400px;height:220px;"></canvas>
+      <canvas id="waveCanvas" style="width:500px;height:220px;"></canvas>
     </div>
     <div class="controls">
       <button class="play-btn" id="playBtn">⏸</button>
@@ -212,7 +212,7 @@ function drawSide(t) {
   const rowH  = pH / NUM_ROWS;
 
   // Sensor position — moves right with distance
-  const sensorX  = scrX + 28 + distFrac * 200;
+  const sensorX  = scrX + 28 + distFrac * 340;
   const sensorCY = scrCY;
 
   // Gaussian capture sigma in screen-pixels
