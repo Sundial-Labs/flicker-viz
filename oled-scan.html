@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OLED Row Scanning</title>
+  <style>
+    :root {
+      --bg:      #0b0b0f;
+      --surface: #13131a;
+      --border:  #202030;
+      --text:    #b8b8cc;
+      --muted:   #4a4a62;
+      --accent:  #4a7ef5;
+      --cursor:  #f0a040;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 32px 16px;
+      gap: 26px;
+    }
+
+    .heading { text-align: center; }
+    .heading h1 {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--text);
+      margin-bottom: 5px;
+    }
+    .heading p {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+
+    .main {
+      display: flex;
+      gap: 28px;
+      align-items: flex-start;
+    }
+
+    .side-panels {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 9px 14px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .info-grid {
+      padding: 11px 14px;
+      display: grid;
+      grid-template-columns: auto auto;
+      gap: 5px 24px;
+    }
+    .lbl { font-size: 11px; color: var(--muted); }
+    .val { font-size: 11px; color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 13px 20px;
+    }
+
+    .play-btn {
+      width: 38px; height: 38px;
+      border-radius: 50%;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      transition: opacity 0.15s, transform 0.1s;
+      user-select: none;
+    }
+    .play-btn:hover  { opacity: 0.82; }
+    .play-btn:active { transform: scale(0.91); }
+
+    .sep { width: 1px; height: 28px; background: var(--border); flex-shrink: 0; }
+
+    .slider-group { display: flex; flex-direction: column; gap: 8px; min-width: 210px; }
+    .slider-top   { display: flex; justify-content: space-between; align-items: baseline; }
+    .slider-top label { font-size: 12px; color: var(--muted); }
+    .slider-top .sv  { font-size: 13px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    input[type=range] {
+      -webkit-appearance: none; appearance: none;
+      width: 100%; height: 4px; border-radius: 2px;
+      background: var(--border); outline: none; cursor: pointer;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: var(--accent); cursor: pointer;
+      box-shadow: 0 0 0 3px rgba(74,126,245,0.22);
+    }
+    input[type=range]::-moz-range-thumb {
+      width: 16px; height: 16px; border-radius: 50%;
+      background: var(--accent); border: none; cursor: pointer;
+    }
+
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+
+<div class="heading">
+  <h1>OLED Row Scanning</h1>
+</div>
+
+<div class="main">
+  <canvas id="phoneCanvas" style="width:176px;height:384px;"></canvas>
+
+  <div class="side-panels">
+    <div class="panel">
+      <div class="panel-header">Scan Waveform — 1 row, 1 period</div>
+      <canvas id="waveCanvas" style="width:306px;height:166px;"></canvas>
+    </div>
+    <div class="controls">
+      <button class="play-btn" id="playBtn" title="Play / Pause">⏸</button>
+      <div class="sep"></div>
+      <div class="slider-group">
+        <div class="slider-top">
+          <label for="brightSlider">Brightness</label>
+          <span class="sv" id="brightLabel">50 %</span>
+        </div>
+        <input type="range" id="brightSlider" min="0" max="100" value="50" step="1">
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Constants ────────────────────────────────────────────────────────────────
+const NUM_ROWS   = 40;
+const PERIOD     = 2.0;   // seconds per full scan cycle (slowed for visibility)
+const SIGMA      = 0.033; // gaussian σ as fraction of period
+
+// ── State ────────────────────────────────────────────────────────────────────
+let playing    = true;
+let wallStart  = performance.now();
+let accum      = 0;           // elapsed seconds before last pause
+let sliderFrac = 0.50;        // slider value as fraction [0.1, 0.9]
+
+// Above DC_THRESH: fixed 90% duty cycle, peak amplitude dims (DC dimming).
+// Below DC_THRESH: peak stays at 1.0, duty cycle tracks slider (PWM dimming).
+const DC_THRESH = 0.50;
+const DC_DUTY   = 0.90;
+
+const PWM_MIN = 0.10; // minimum duty cycle at slider 0%
+const PWM_MAX = DC_DUTY; // duty cycle at the DC/PWM crossover
+
+function getDimParams() {
+  const peakMin = DC_THRESH / DC_DUTY; // peak fixed throughout PWM range
+
+  if (sliderFrac <= DC_THRESH) {
+    // PWM: duty cycle scales from 10% (slider 0%) to 90% (slider 50%)
+    const t = sliderFrac / DC_THRESH;
+    return { dutyCycle: PWM_MIN + t * (PWM_MAX - PWM_MIN), peak: peakMin };
+  }
+  // DC: duty cycle fixed at 90%, peak scales up to 1.0
+  const t = (sliderFrac - DC_THRESH) / (1.0 - DC_THRESH);
+  return { dutyCycle: DC_DUTY, peak: peakMin + t * (1 - peakMin) };
+}
+
+// ── Canvas setup (HiDPI) ─────────────────────────────────────────────────────
+function hiDPI(id) {
+  const canvas = document.getElementById(id);
+  const dpr    = window.devicePixelRatio || 1;
+  const cssW   = parseInt(canvas.style.width);
+  const cssH   = parseInt(canvas.style.height);
+  canvas.width  = cssW * dpr;
+  canvas.height = cssH * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  return { canvas, ctx, W: cssW, H: cssH };
+}
+
+const phone = hiDPI('phoneCanvas');
+const wave  = hiDPI('waveCanvas');
+
+// ── Math ─────────────────────────────────────────────────────────────────────
+// Abramowitz & Stegun erf approximation (max error 1.5e-7)
+function erf(x) {
+  const s = x < 0 ? -1 : 1, a = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * a);
+  const p = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t
+              - 0.284496736) * t + 0.254829592) * t;
+  return s * (1 - p * Math.exp(-a * a));
+}
+
+// Brightness of a row at `phase` ∈ ℝ:
+//   Convolution of rectangular pulse [0, pulseWidth] with a periodic gaussian
+//   = Σ_{k} ½·[erf((φ-k)/√2σ) - erf((φ-k-pw)/√2σ)]
+function brightness(phase, pulseWidth) {
+  phase = ((phase % 1) + 1) % 1;
+  const s2 = Math.SQRT2 * SIGMA;
+  let v = 0;
+  for (let k = -2; k <= 2; k++) {
+    v += 0.5 * (erf((phase - k) / s2) - erf((phase - k - pulseWidth) / s2));
+  }
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+function getT() {
+  return playing ? accum + (performance.now() - wallStart) / 1000 : accum;
+}
+
+// ── Rounded-rect path helper ──────────────────────────────────────────────────
+function rrect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y,     x + w, y + r,     r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x,     y + h, x,     y + h - r, r);
+  ctx.lineTo(x,     y + r);
+  ctx.arcTo(x,     y,     x + r, y,         r);
+  ctx.closePath();
+}
+
+// ── Draw phone ───────────────────────────────────────────────────────────────
+function drawPhone(t) {
+  const { ctx, W, H } = phone;
+  ctx.clearRect(0, 0, W, H);
+
+  // Body geometry
+  const bx = 12, by = 10, bw = W - 24, bh = H - 20, br = 32;
+
+  // Drop shadow
+  ctx.save();
+  ctx.shadowColor   = 'rgba(0,0,0,0.6)';
+  ctx.shadowBlur    = 28;
+  ctx.shadowOffsetY = 8;
+  rrect(ctx, bx, by, bw, bh, br);
+  ctx.fillStyle = '#111118';
+  ctx.fill();
+  ctx.restore();
+
+  // Body fill
+  rrect(ctx, bx, by, bw, bh, br);
+  const bodyG = ctx.createLinearGradient(bx, by, bx + bw, by + bh);
+  bodyG.addColorStop(0, '#252530');
+  bodyG.addColorStop(1, '#13131a');
+  ctx.fillStyle = bodyG;
+  ctx.fill();
+
+  // Body edge
+  rrect(ctx, bx, by, bw, bh, br);
+  ctx.strokeStyle = '#30303e';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Screen bounds
+  const sx = bx + 8, sy = by + 46, sw = bw - 16, sh = bh - 78, sr = 22;
+
+  // Clip to screen
+  ctx.save();
+  rrect(ctx, sx, sy, sw, sh, sr);
+  ctx.clip();
+
+  // OLED black base
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(sx, sy, sw, sh);
+
+  // 40 scanning rows
+  const { dutyCycle, peak } = getDimParams();
+  const rowH = sh / NUM_ROWS;
+  for (let i = 0; i < NUM_ROWS; i++) {
+    const phase = t / PERIOD - i / NUM_ROWS;
+    const b     = brightness(phase, dutyCycle) * peak;
+    if (b < 0.002) continue;
+
+    const ry = sy + i * rowH;
+
+    // Warm-white OLED pixel color
+    ctx.fillStyle = `rgb(${b * 255 | 0},${b * 250 | 0},${b * 240 | 0})`;
+    ctx.fillRect(sx, ry, sw, rowH + 0.6); // +0.6 prevents hairline gaps
+
+    // Soft bloom on bright rows
+    if (b > 0.6) {
+      ctx.fillStyle = `rgba(255,248,228,${(b - 0.6) * 0.22})`;
+      ctx.fillRect(sx, Math.max(sy, ry - 1), sw, rowH + 2);
+    }
+  }
+
+  ctx.restore();
+
+  // Screen glass highlight
+  rrect(ctx, sx, sy, sw, sh, sr);
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Dynamic Island
+  const diW = 84, diH = 22;
+  const dix = bx + (bw - diW) / 2, diy = by + 15;
+  rrect(ctx, dix, diy, diW, diH, 11);
+  ctx.fillStyle = '#000';
+  ctx.fill();
+
+  // Camera lens in island
+  ctx.beginPath();
+  ctx.arc(dix + diW - 13, diy + 11, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#0c0c14';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(dix + diW - 13, diy + 11, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#091420';
+  ctx.fill();
+  // specular dot
+  ctx.beginPath();
+  ctx.arc(dix + diW - 14.5, diy + 9.5, 1.1, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.28)';
+  ctx.fill();
+
+  // Home indicator bar
+  rrect(ctx, bx + bw / 2 - 28, by + bh - 14, 56, 4, 2);
+  ctx.fillStyle = '#28283a';
+  ctx.fill();
+
+  // Side buttons (matte dark)
+  ctx.fillStyle = '#1c1c26';
+  rrect(ctx, bx + bw - 1.5, by + 90,  3, 58, 1.5); ctx.fill(); // power (right)
+  rrect(ctx, bx - 1.5,      by + 80,  3, 34, 1.5); ctx.fill(); // vol + (left)
+  rrect(ctx, bx - 1.5,      by + 122, 3, 34, 1.5); ctx.fill(); // vol − (left)
+  rrect(ctx, bx - 1.5,      by + 56,  3, 18, 1.5); ctx.fill(); // mute (left)
+}
+
+// ── Draw waveform ─────────────────────────────────────────────────────────────
+function drawWave(t) {
+  const { ctx, W, H } = wave;
+  ctx.clearRect(0, 0, W, H);
+
+  const pl = 44, pr = 18, pt = 18, pb = 26;
+  const pw2 = W - pl - pr, ph = H - pt - pb;
+
+  // Grid horizontals (0%, 25%, 50%, 75%, 100%)
+  ctx.strokeStyle = '#1a1a26';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pt + ph - (i / 4) * ph;
+    ctx.beginPath(); ctx.moveTo(pl, y); ctx.lineTo(pl + pw2, y); ctx.stroke();
+    ctx.fillStyle = '#36364a';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${i * 25}%`, pl - 5, y + 3.5);
+  }
+  // Grid verticals (0, T/4, T/2, 3T/4, T)
+  const xLabels = ['0', 'T/4', 'T/2', '3T/4', 'T'];
+  for (let i = 0; i <= 4; i++) {
+    const x = pl + (i / 4) * pw2;
+    ctx.beginPath(); ctx.moveTo(x, pt); ctx.lineTo(x, pt + ph); ctx.stroke();
+    ctx.fillStyle = '#36364a';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(xLabels[i], x, pt + ph + 14);
+  }
+
+  // Sample waveform
+  const { dutyCycle, peak } = getDimParams();
+  const N = 600;
+  const pts = [];
+  for (let i = 0; i <= N; i++) {
+    const phase = i / N;
+    const b = brightness(phase, dutyCycle) * peak;
+    pts.push([pl + phase * pw2, pt + ph - b * ph]);
+  }
+
+  // Fill under curve
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.lineTo(pl + pw2, pt + ph);
+  ctx.lineTo(pl, pt + ph);
+  ctx.closePath();
+  const fillG = ctx.createLinearGradient(0, pt, 0, pt + ph);
+  fillG.addColorStop(0, 'rgba(74,126,245,0.30)');
+  fillG.addColorStop(1, 'rgba(74,126,245,0.02)');
+  ctx.fillStyle = fillG;
+  ctx.fill();
+
+  // Waveform line
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.strokeStyle = '#4a7ef5';
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  // Axis lines
+  ctx.strokeStyle = '#28283c';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(pl, pt); ctx.lineTo(pl, pt + ph); ctx.lineTo(pl + pw2, pt + ph);
+  ctx.stroke();
+
+  // Moving cursor — shows row 0's current position in the waveform
+  const phase0 = ((t / PERIOD) % 1 + 1) % 1;
+  const cx = pl + phase0 * pw2;
+  const cb = brightness(phase0, dutyCycle) * peak;
+  const cy = pt + ph - cb * ph;
+
+  ctx.setLineDash([3, 4]);
+  ctx.beginPath();
+  ctx.moveTo(cx, pt); ctx.lineTo(cx, pt + ph);
+  ctx.strokeStyle = 'rgba(240,160,60,0.65)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Cursor dot
+  ctx.beginPath();
+  ctx.arc(cx, cy, 4.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#f0a040';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+// ── Animation loop ────────────────────────────────────────────────────────────
+function loop() {
+  const t = getT();
+  drawPhone(t);
+  drawWave(t);
+  requestAnimationFrame(loop);
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+document.getElementById('playBtn').addEventListener('click', function () {
+  if (playing) {
+    accum    = getT();
+    playing  = false;
+    this.innerHTML = '▶';
+  } else {
+    wallStart = performance.now();
+    playing   = true;
+    this.innerHTML = '⏸';
+  }
+});
+
+document.getElementById('brightSlider').addEventListener('input', function () {
+  sliderFrac = this.value / 100;
+  document.getElementById('brightLabel').textContent = `${this.value} %`;
+});
+
+loop();
+</script>
+</body>
+</html>

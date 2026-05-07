@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PWM Measurement vs Distance</title>
+  <style>
+    :root {
+      --bg:      #0b0b0f;
+      --surface: #13131a;
+      --border:  #202030;
+      --text:    #b8b8cc;
+      --muted:   #4a4a62;
+      --accent:  #4a7ef5;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Segoe UI', sans-serif;
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; min-height: 100vh; padding: 32px 16px; gap: 26px;
+    }
+    h1 {
+      font-size: 13px; font-weight: 600; letter-spacing: 0.16em;
+      text-transform: uppercase; color: var(--text);
+    }
+    .main { display: flex; gap: 28px; align-items: flex-start; }
+    .side-panels { display: flex; flex-direction: column; gap: 12px; }
+    .panel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden;
+    }
+    .panel-header {
+      padding: 9px 14px; font-size: 10px; font-weight: 600;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--muted); border-bottom: 1px solid var(--border);
+    }
+    .controls {
+      display: flex; align-items: center; gap: 14px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 13px 18px;
+    }
+    .play-btn {
+      width: 38px; height: 38px; border-radius: 50%; border: none;
+      background: var(--accent); color: #fff; font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: opacity 0.15s, transform 0.1s; user-select: none;
+    }
+    .play-btn:hover  { opacity: 0.82; }
+    .play-btn:active { transform: scale(0.91); }
+    .sep { width: 1px; height: 28px; background: var(--border); flex-shrink: 0; }
+    .sliders { display: flex; flex-direction: column; gap: 10px; flex: 1; }
+    .slider-group { display: flex; flex-direction: column; gap: 5px; }
+    .slider-top { display: flex; justify-content: space-between; align-items: baseline; }
+    .slider-top label { font-size: 11px; color: var(--muted); }
+    .slider-top .sv {
+      font-size: 12px; color: var(--text); font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    input[type=range] {
+      -webkit-appearance: none; appearance: none; width: 100%; height: 4px;
+      border-radius: 2px; background: var(--border); outline: none; cursor: pointer;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+      background: var(--accent); cursor: pointer;
+      box-shadow: 0 0 0 3px rgba(74,126,245,0.2);
+    }
+    input[type=range]::-moz-range-thumb {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: var(--accent); border: none; cursor: pointer;
+    }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+
+<h1>PWM Measurement vs Distance</h1>
+
+<div class="main">
+  <canvas id="sideCanvas" style="width:340px;height:270px;"></canvas>
+
+  <div class="side-panels">
+    <div class="panel">
+      <div class="panel-header">Sensor Waveform</div>
+      <canvas id="waveCanvas" style="width:400px;height:220px;"></canvas>
+    </div>
+    <div class="controls">
+      <button class="play-btn" id="playBtn">⏸</button>
+      <div class="sep"></div>
+      <div class="sliders">
+        <div class="slider-group">
+          <div class="slider-top">
+            <label for="brightSlider">Brightness</label>
+            <span class="sv" id="brightLabel">50 %</span>
+          </div>
+          <input type="range" id="brightSlider" min="0" max="100" value="50" step="1">
+        </div>
+        <div class="slider-group">
+          <div class="slider-top">
+            <label for="distSlider">Distance</label>
+            <span class="sv" id="distLabel">0 %</span>
+          </div>
+          <input type="range" id="distSlider" min="0" max="100" value="0" step="1">
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Constants ─────────────────────────────────────────────────────────────────
+const NUM_ROWS   = 40;
+const PERIOD     = 2.0;
+const SIGMA_BASE = 0.033;
+const DC_THRESH  = 0.50;
+const DC_DUTY    = 0.90;
+const PWM_MIN    = 0.10;
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let playing    = true;
+let wallStart  = performance.now();
+let accum      = 0;
+let sliderFrac = 0.50;
+let distFrac   = 0.00;
+
+function getDimParams() {
+  const peakMin = DC_THRESH / DC_DUTY;
+  if (sliderFrac <= DC_THRESH) {
+    const t = sliderFrac / DC_THRESH;
+    return { dc: PWM_MIN + t * (DC_DUTY - PWM_MIN), peak: peakMin };
+  }
+  const t = (sliderFrac - DC_THRESH) / (1 - DC_THRESH);
+  return { dc: DC_DUTY, peak: peakMin + t * (1 - peakMin) };
+}
+
+// ── Math ──────────────────────────────────────────────────────────────────────
+function erf(x) {
+  const s = x < 0 ? -1 : 1, a = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * a);
+  const p = ((((1.061405429*t - 1.453152027)*t + 1.421413741)*t
+              - 0.284496736)*t + 0.254829592)*t;
+  return s * (1 - p * Math.exp(-a * a));
+}
+
+function rawBright(phase, dutyCycle, sigma) {
+  phase = (((phase + 0.5) % 1) + 1) % 1;
+  const s2 = Math.SQRT2 * sigma;
+  let v = 0;
+  for (let k = -2; k <= 2; k++) {
+    v += 0.5 * (erf((phase - k) / s2) - erf((phase - k - dutyCycle) / s2));
+  }
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+// Single row waveform (intrinsic sigma only)
+function singleRow(phase, dc) { return rawBright(phase, dc, SIGMA_BASE); }
+
+// Sensor-measured waveform: rows smear together, modelled as wider gaussian
+function measured(phase, dc, df) {
+  const sigmaRows = df * 15;
+  const sigmaT    = sigmaRows / NUM_ROWS;
+  const sigma     = Math.sqrt(SIGMA_BASE**2 + sigmaT**2);
+  return rawBright(phase, dc, sigma);
+}
+
+function getT() {
+  return playing ? accum + (performance.now() - wallStart) / 1000 : accum;
+}
+
+// ── HiDPI canvas setup ────────────────────────────────────────────────────────
+function hiDPI(id) {
+  const cv  = document.getElementById(id);
+  const dpr = window.devicePixelRatio || 1;
+  const W   = parseInt(cv.style.width);
+  const H   = parseInt(cv.style.height);
+  cv.width  = W * dpr;
+  cv.height = H * dpr;
+  const ctx = cv.getContext('2d');
+  ctx.scale(dpr, dpr);
+  return { ctx, W, H };
+}
+
+const sideC = hiDPI('sideCanvas');
+const waveC = hiDPI('waveCanvas');
+
+function rrect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);      ctx.lineTo(x+w-r, y);
+  ctx.arcTo(x+w, y,     x+w, y+r,     r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.arcTo(x+w, y+h,   x+w-r, y+h,   r);
+  ctx.lineTo(x+r, y+h);
+  ctx.arcTo(x,   y+h,   x,   y+h-r,   r);
+  ctx.lineTo(x,   y+r);
+  ctx.arcTo(x,   y,     x+r, y,        r);
+  ctx.closePath();
+}
+
+// ── Side view ─────────────────────────────────────────────────────────────────
+function drawSide(t) {
+  const { ctx, W, H } = sideC;
+  ctx.clearRect(0, 0, W, H);
+
+  const { dc, peak } = getDimParams();
+
+  // Phone geometry (thin vertical body, edge-on)
+  const pX = 20, pY = 22, pW = 20, pH = H - 44, pR = 5;
+  const scrX  = pX + pW;          // screen face (right edge of phone)
+  const scrCY = pY + pH / 2;      // vertical center of screen
+  const rowH  = pH / NUM_ROWS;
+
+  // Sensor position — moves right with distance
+  const sensorX  = scrX + 28 + distFrac * 200;
+  const sensorCY = scrCY;
+
+  // Gaussian capture sigma in screen-pixels
+  const sigmaRows = distFrac * 15;
+  const sigmaPx   = Math.max(0.5, sigmaRows * rowH);
+  const coneHW    = Math.max(5, sigmaPx * 2);   // half-width of drawn cone at screen
+
+  // Current instantaneous signal level
+  const instB = measured(t / PERIOD - 0.5, dc, distFrac) * peak; // middle row
+
+  // ── Ambient screen glow (faint radial bloom) ──
+  const bloom = ctx.createRadialGradient(scrX, scrCY, 0, scrX, scrCY, W * 0.65);
+  bloom.addColorStop(0,   `rgba(255,250,232,${instB * 0.10})`);
+  bloom.addColorStop(0.5, `rgba(255,250,232,${instB * 0.03})`);
+  bloom.addColorStop(1,   'rgba(255,250,232,0)');
+  ctx.fillStyle = bloom;
+  ctx.fillRect(scrX, pY - 10, W - scrX, pH + 20);
+
+  // ── Capture cone (triangular, apex at sensor) ──
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(sensorX, sensorCY);
+  ctx.lineTo(scrX, scrCY - coneHW);
+  ctx.lineTo(scrX, scrCY + coneHW);
+  ctx.closePath();
+
+  const coneG = ctx.createLinearGradient(scrX, 0, sensorX, 0);
+  coneG.addColorStop(0, `rgba(255,252,235,${instB * 0.50})`);
+  coneG.addColorStop(1, `rgba(255,252,235,${instB * 0.05})`);
+  ctx.fillStyle = coneG;
+  ctx.fill();
+
+  // Cone edge rays
+  ctx.beginPath();
+  ctx.moveTo(sensorX, sensorCY); ctx.lineTo(scrX, scrCY - coneHW);
+  ctx.moveTo(sensorX, sensorCY); ctx.lineTo(scrX, scrCY + coneHW);
+  ctx.strokeStyle = `rgba(210,205,190,${0.12 + instB * 0.35})`;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.restore();
+
+  // ── Phone body (drawn on top of cone) ──
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.55)';
+  ctx.shadowBlur  = 18;
+  ctx.shadowOffsetY = 5;
+  rrect(ctx, pX, pY, pW, pH, pR);
+  const bodyG = ctx.createLinearGradient(pX, 0, pX + pW, 0);
+  bodyG.addColorStop(0, '#252530');
+  bodyG.addColorStop(1, '#14141e');
+  ctx.fillStyle = bodyG;
+  ctx.fill();
+  ctx.restore();
+
+  rrect(ctx, pX, pY, pW, pH, pR);
+  ctx.strokeStyle = '#2e2e3c';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // ── Screen strip (right 6 px of phone body) ──
+  const ssX = pX + pW - 6, ssW = 6;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(ssX, pY, ssW, pH);
+  ctx.clip();
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(ssX, pY, ssW, pH);
+
+  for (let i = 0; i < NUM_ROWS; i++) {
+    const b = singleRow(t / PERIOD - i / NUM_ROWS, dc) * peak;
+    if (b < 0.002) continue;
+    const ry = pY + i * rowH;
+    ctx.fillStyle = `rgb(${b*255|0},${b*250|0},${b*240|0})`;
+    ctx.fillRect(ssX, ry, ssW, rowH + 0.5);
+  }
+  ctx.restore();
+
+  // Gaussian capture-window overlay on screen strip (blue tint = "what sensor sees")
+  for (let py = pY | 0; py < (pY + pH) | 0; py++) {
+    const dy = py + 0.5 - scrCY;
+    const g  = Math.exp(-0.5 * (dy / sigmaPx) ** 2);
+    if (g < 0.015) continue;
+    ctx.fillStyle = `rgba(74,126,245,${g * 0.38})`;
+    ctx.fillRect(ssX, py, ssW, 1);
+  }
+
+  // Screen-edge highlight
+  ctx.fillStyle = 'rgba(255,255,255,0.05)';
+  ctx.fillRect(scrX - 1, pY, 1, pH);
+
+  // ── Sensor body ──
+  const sW = 14, sH = 22;
+  ctx.save();
+  ctx.shadowColor = `rgba(255,252,232,${instB * 0.9})`;
+  ctx.shadowBlur  = 18 * instB;
+  rrect(ctx, sensorX - sW/2, sensorCY - sH/2, sW, sH, 3);
+  ctx.fillStyle = '#1c1c2a';
+  ctx.fill();
+  ctx.restore();
+
+  rrect(ctx, sensorX - sW/2, sensorCY - sH/2, sW, sH, 3);
+  ctx.strokeStyle = '#30304a';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Sensor aperture
+  ctx.beginPath();
+  ctx.arc(sensorX, sensorCY, 5, 0, Math.PI * 2);
+  ctx.fillStyle = `rgb(${instB*255|0},${instB*250|0},${instB*240|0})`;
+  ctx.fill();
+
+  // ── Labels ──
+  ctx.fillStyle = '#36365a';
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('screen', pX + pW / 2, pY - 8);
+  ctx.fillText('sensor', sensorX, sensorCY + sH / 2 + 13);
+
+  // Distance indicator
+  if (distFrac > 0.01) {
+    const lineY = Math.min(scrCY + coneHW + 16, pY + pH + 14);
+    ctx.strokeStyle = '#252538';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(scrX, lineY);
+    ctx.lineTo(sensorX, lineY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#36365a';
+    ctx.fillText('d', (scrX + sensorX) / 2, lineY + 13);
+  }
+}
+
+// ── Waveform panel ────────────────────────────────────────────────────────────
+function drawWave(t) {
+  const { ctx, W, H } = waveC;
+  ctx.clearRect(0, 0, W, H);
+
+  const pl = 42, pr = 14, pt = 22, pb = 28;
+  const pw = W - pl - pr, ph = H - pt - pb;
+  const { dc, peak } = getDimParams();
+
+  // Grid
+  ctx.strokeStyle = '#1a1a26';
+  ctx.lineWidth = 1;
+  const yLbls = ['0','25%','50%','75%','100%'];
+  const xLbls = ['0','T/4','T/2','3T/4','T'];
+  for (let i = 0; i <= 4; i++) {
+    const y = pt + ph - (i / 4) * ph;
+    ctx.beginPath(); ctx.moveTo(pl, y); ctx.lineTo(pl + pw, y); ctx.stroke();
+    ctx.fillStyle = '#36364a';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(yLbls[i], pl - 5, y + 3.5);
+
+    const x = pl + (i / 4) * pw;
+    ctx.beginPath(); ctx.moveTo(x, pt); ctx.lineTo(x, pt + ph); ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.fillText(xLbls[i], x, pt + ph + 14);
+  }
+
+  const N = 600;
+
+  // Reference waveform (d = 0, faint)
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const phase = i / N;
+    const b = singleRow(phase, dc) * peak;
+    const x = pl + phase * pw, y = pt + ph - b * ph;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(180,180,205,0.22)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Measured waveform (smeared)
+  const mPts = [];
+  ctx.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const phase = i / N;
+    const b = measured(phase, dc, distFrac) * peak;
+    const x = pl + phase * pw, y = pt + ph - b * ph;
+    mPts.push([x, y]);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = '#4a7ef5';
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  // Fill under measured
+  ctx.beginPath();
+  mPts.forEach(([x, y], i) => i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
+  ctx.lineTo(pl + pw, pt + ph);
+  ctx.lineTo(pl, pt + ph);
+  ctx.closePath();
+  const fg = ctx.createLinearGradient(0, pt, 0, pt + ph);
+  fg.addColorStop(0, 'rgba(74,126,245,0.25)');
+  fg.addColorStop(1, 'rgba(74,126,245,0.02)');
+  ctx.fillStyle = fg;
+  ctx.fill();
+
+  // Axes
+  ctx.strokeStyle = '#28283c';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(pl, pt); ctx.lineTo(pl, pt + ph); ctx.lineTo(pl + pw, pt + ph);
+  ctx.stroke();
+
+  // Legend
+  ctx.font = '9px -apple-system, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillStyle = 'rgba(180,180,205,0.45)';
+  ctx.fillText('─ reference (d=0)', pl + pw, pt - 5);
+  ctx.fillStyle = 'rgba(74,126,245,0.85)';
+  ctx.fillText('─ measured', pl + pw, pt + 8);
+
+  // Moving cursor (row 0 phase)
+  const phase0 = ((t / PERIOD) % 1 + 1) % 1;
+  const cx = pl + phase0 * pw;
+  const cb = measured(phase0, dc, distFrac) * peak;
+  const cy = pt + ph - cb * ph;
+
+  ctx.setLineDash([3, 4]);
+  ctx.beginPath();
+  ctx.moveTo(cx, pt); ctx.lineTo(cx, pt + ph);
+  ctx.strokeStyle = 'rgba(240,160,60,0.65)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, 4.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#f0a040';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+// ── Loop ──────────────────────────────────────────────────────────────────────
+function loop() {
+  const t = getT();
+  drawSide(t);
+  drawWave(t);
+  requestAnimationFrame(loop);
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+document.getElementById('playBtn').addEventListener('click', function () {
+  if (playing) {
+    accum = getT(); playing = false; this.innerHTML = '▶';
+  } else {
+    wallStart = performance.now(); playing = true; this.innerHTML = '⏸';
+  }
+});
+
+document.getElementById('brightSlider').addEventListener('input', function () {
+  sliderFrac = this.value / 100;
+  document.getElementById('brightLabel').textContent = `${this.value} %`;
+});
+
+document.getElementById('distSlider').addEventListener('input', function () {
+  distFrac = this.value / 100;
+  document.getElementById('distLabel').textContent = `${this.value} %`;
+});
+
+loop();
+</script>
+</body>
+</html>
