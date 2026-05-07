@@ -133,9 +133,11 @@
     }
 
     canvas { display: block; }
+    body { overflow-x: hidden; }
   </style>
 </head>
 <body>
+<div id="root">
 
 <div class="heading">
   <h1>OLED Row Scanning</h1>
@@ -162,6 +164,8 @@
     </div>
   </div>
 </div>
+
+</div> <!-- #root -->
 
 <script>
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -482,6 +486,25 @@ document.getElementById('brightSlider').addEventListener('input', function () {
 });
 
 loop();
+
+// ── Responsive scaling ────────────────────────────────────────────────────────
+(function () {
+  const NATIVE_W = 550;
+  const root = document.getElementById('root');
+  function rescale() {
+    const s = Math.min(1, window.innerWidth / NATIVE_W);
+    if ('zoom' in root.style) {
+      root.style.zoom = s;
+    } else {
+      root.style.transform = `scale(${s})`;
+      root.style.transformOrigin = 'top left';
+      root.style.marginLeft = ((window.innerWidth - NATIVE_W * s) / 2) + 'px';
+      document.body.style.height = Math.ceil(root.scrollHeight * s + 48) + 'px';
+    }
+  }
+  window.addEventListener('resize', rescale);
+  rescale();
+}());
 </script>
 </body>
 </html>
