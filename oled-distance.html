@@ -332,8 +332,8 @@ function drawSide(t) {
 
   // Distance indicator
   if (distFrac > 0.01) {
-    const lineY = Math.min(scrCY + coneHW + 16, pY + pH + 14);
-    ctx.strokeStyle = '#252538';
+    const lineY = Math.min(scrCY + coneHW + 16, H - 20);
+    ctx.strokeStyle = 'rgba(120,120,180,0.6)';
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 4]);
     ctx.beginPath();
@@ -341,8 +341,8 @@ function drawSide(t) {
     ctx.lineTo(sensorX, lineY);
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = '#36365a';
-    ctx.fillText('d', (scrX + sensorX) / 2, lineY + 13);
+    ctx.fillStyle = 'rgba(140,140,200,0.8)';
+    ctx.fillText('d', (scrX + sensorX) / 2, lineY + 12);
   }
 }
 
