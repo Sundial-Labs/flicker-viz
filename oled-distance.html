@@ -438,8 +438,8 @@ function drawWave(t) {
   ctx.fillStyle = 'rgba(74,126,245,0.85)';
   ctx.fillText('─ measured', pl + pw, pt + 8);
 
-  // Moving cursor (row 0 phase)
-  const phase0 = ((t / PERIOD) % 1 + 1) % 1;
+  // Moving cursor (middle row phase, matches instB)
+  const phase0 = ((t / PERIOD - 0.5) % 1 + 1) % 1;
   const cx = pl + phase0 * pw;
   const cb = measured(phase0, dc, distFrac) * peak;
   const cy = pt + ph - cb * ph;
