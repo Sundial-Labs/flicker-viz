@@ -80,31 +80,29 @@
 
 <div class="main">
   <canvas id="sideCanvas" style="width:460px;height:270px;"></canvas>
+  <div class="panel">
+    <div class="panel-header">Sensor Waveform</div>
+    <canvas id="waveCanvas" style="width:500px;height:220px;"></canvas>
+  </div>
+</div>
 
-  <div class="side-panels">
-    <div class="panel">
-      <div class="panel-header">Sensor Waveform</div>
-      <canvas id="waveCanvas" style="width:500px;height:220px;"></canvas>
-    </div>
-    <div class="controls">
-      <button class="play-btn" id="playBtn">⏸</button>
-      <div class="sep"></div>
-      <div class="sliders">
-        <div class="slider-group">
-          <div class="slider-top">
-            <label for="brightSlider">Brightness</label>
-            <span class="sv" id="brightLabel">50 %</span>
-          </div>
-          <input type="range" id="brightSlider" min="0" max="100" value="50" step="1">
-        </div>
-        <div class="slider-group">
-          <div class="slider-top">
-            <label for="distSlider">Distance</label>
-            <span class="sv" id="distLabel">0 %</span>
-          </div>
-          <input type="range" id="distSlider" min="0" max="100" value="0" step="1">
-        </div>
+<div class="controls">
+  <button class="play-btn" id="playBtn">⏸</button>
+  <div class="sep"></div>
+  <div class="sliders">
+    <div class="slider-group">
+      <div class="slider-top">
+        <label for="brightSlider">Brightness</label>
+        <span class="sv" id="brightLabel">50 %</span>
       </div>
+      <input type="range" id="brightSlider" min="0" max="100" value="50" step="1">
+    </div>
+    <div class="slider-group">
+      <div class="slider-top">
+        <label for="distSlider">Distance</label>
+        <span class="sv" id="distLabel">0 %</span>
+      </div>
+      <input type="range" id="distSlider" min="0" max="100" value="0" step="1">
     </div>
   </div>
 </div>
