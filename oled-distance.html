@@ -228,8 +228,12 @@ function drawSide(t) {
   ctx.fillStyle = bloom;
   ctx.fillRect(scrX, pY - 10, W - scrX, pH + 20);
 
-  // ── Capture cone (triangular, apex at sensor) ──
+  // ── Capture cone (clipped to screen vertical bounds) ──
   ctx.save();
+  ctx.beginPath();
+  ctx.rect(scrX, pY, W - scrX, pH);
+  ctx.clip();
+
   ctx.beginPath();
   ctx.moveTo(sensorX, sensorCY);
   ctx.lineTo(scrX, scrCY - coneHW);
